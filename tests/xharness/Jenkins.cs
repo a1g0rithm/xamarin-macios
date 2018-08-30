@@ -903,6 +903,7 @@ namespace xharness
 						while (true) {
 							await Task.Delay (TimeSpan.FromMinutes (10));
 							Console.WriteLine ("Still running tests. Please be patient.");
+							ProcessHelper.kill (Process.GetCurrentProcess ().Id, 3 /* SIGQUIT */);
 						}
 					});
 				}
