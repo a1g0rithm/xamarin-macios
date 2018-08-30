@@ -263,6 +263,7 @@ def indexOfElement (list, element)
     return -1
 }
 
+// returns an empty string in case of success, otherwise an error message
 def runXamarinMacTests (url, macOS, maccore_hash, xamarin_macios_hash)
 {
     def failed = false
@@ -278,23 +279,29 @@ def runXamarinMacTests (url, macOS, maccore_hash, xamarin_macios_hash)
             // Due to how github has implemented pull requests, this works
             // even for pull requests from forks, since each commit in the pull request
             // is also available from the main repository.
-            sh ("""
+            def downloadStatus = sh (script: """
                 curl -fLO https://raw.githubusercontent.com/xamarin/xamarin-macios/${xamarin_macios_hash}/jenkins/prepare-packaged-macos-tests.sh
                 chmod +x prepare-packaged-macos-tests.sh
                 ./prepare-packaged-macos-tests.sh '${url}' '${maccore_hash}'
-                """)
-            def tests = [ "dontlink", "apitest", "introspection", "linksdk", "linkall", "xammac_tests" ];
-            tests.each { test ->
-                def t = "${test}"
-                try {
+                """, returnStatus: true)
+            if (downloadStatus != 0) {
+                failed = true
+                echoError ("Test preparation (download & provisioning) failed with exit code: ${downloadStatus}}")
+                failedTests.add ("Test preparation (download & provisioning)")
+            } else {
+                def tests = [ "dontlink", "apitest", "introspection", "linksdk", "linkall", "xammac_tests" ];
+                tests.each { test ->
+                    def t = "${test}"
                     timeout (time: 10, unit: 'MINUTES') {
-                        sh ("make -C mac-test-package/tests exec-mac-${t} MONO_DEBUG=no-gdb-backtrace")
-                        echo ("${t} succeeded")
+                        def exitCode = sh (script: "make -C mac-test-package/tests exec-mac-${t} MONO_DEBUG=no-gdb-backtrace", returnStatus: true)
+                        if (exitCode != 0) {
+                            echoError ("${t} failed with exit code: ${exitCode}")
+                            failed = true
+                            failedTests.add (t)
+                        } else {
+                            echo ("${t} succeeded")
+                        }
                     }
-                } catch (error) {
-                    echoError ("${t} failed with error: ${error}")
-                    failed = true
-                    failedTests.add (t)
                 }
             }
         }
@@ -321,8 +328,9 @@ def runXamarinMacTests (url, macOS, maccore_hash, xamarin_macios_hash)
     if (failed) {
         def failureMessage = "Xamarin.Mac tests on ${macOS} failed (${failedTests.join (', ')})"
         manager.addErrorBadge (failureMessage)
-        error (failureMessage)
+        return failureMessage
     }
+    return ""
 }
 
 def abortExecutingBuilds ()
@@ -629,24 +637,19 @@ timestamps {
                                             def excluded = indexOfElement (excludedOSes, os) >= 0
                                             def nodeText = excluded ? "ℹ️ XM tests not executed on 10.${macOS} ℹ️" : "XM tests on 10.${macOS}"
                                             builders [nodeText] = {
-                                                try {
-                                                    if (excluded) {
-                                                        echo (nodeText)
-                                                    } else {
-                                                        node ("xamarin-macios && macos-10.${macOS}") {
-                                                            stage ("Running XM tests on '10.${macOS}'") {
-                                                                runXamarinMacTests (url, "macOS 10.${macOS}", maccore_hash, gitHash)
-                                                            }
+                                                if (excluded) {
+                                                    echo (nodeText)
+                                                } else {
+                                                    def xmFailureMessage = ""
+                                                    node ("xamarin-macios && macos-10.${macOS}") {
+                                                        stage ("Running XM tests on '10.${macOS}'") {
+                                                            xmFailureMessage = runXamarinMacTests (url, "macOS 10.${macOS}", maccore_hash, gitHash)
                                                         }
                                                     }
-                                                } catch (err) {
-                                                    currentStage = "Running XM tests on '10.${macOS}'"
-                                                    def msg = err.getMessage ();
-                                                    if (msg == "")
-                                                        msg = "Xamarin.Mac tests on 10.${macOS} failed"
-                                                    appendFileComment ("🔥 [${msg}](${env.RUN_DISPLAY_URL}) 🔥\n")
-                                                    failedStages.add (currentStage)
-                                                    throw err
+                                                    if (xmFailureMessage != "") {
+                                                        failedStages.add ("Running XM tests on '10.${macOS}'")
+                                                        appendFileComment ("🔥 [${xmFailureMessage}](${env.RUN_DISPLAY_URL}) 🔥\n")
+                                                    }
                                                 }
                                             }
                                         }
@@ -662,7 +665,11 @@ timestamps {
                                                 appendFileComment ("ℹ️ Test run skipped: ${skipLocalTestRunReason}\n")
                                             } else {
                                                 echo ("Html report: ${reportPrefix}/tests/index.html")
-                                                sh ("${workspace}/xamarin-macios/jenkins/run-tests.sh --target=wrench-jenkins --publish --keychain=xamarin-macios")
+                                                def exitCode = sh (script: "${workspace}/xamarin-macios/jenkins/run-tests.sh --target=wrench-jenkins --publish --keychain=xamarin-macios", returnStatus: true)
+                                                if (exitCode != 0) {
+                                                    failedStages.add (currentStage)
+                                                    echoError ("${currentStage} failed with exit code ${exitCode}")
+                                                }
                                             }
                                         }
                                         stage ('Test docs') {
@@ -673,7 +680,11 @@ timestamps {
                                             if (!testDocs) {
                                                 echo ("Skipping docs testing, it's only done on master (current (target) branch is ${targetBranch})")
                                             } else {
-                                                sh ("make -C ${workspace}/xamarin-macios/tests wrench-docs")
+                                                def exitCode = sh (script: "make -C ${workspace}/xamarin-macios/tests wrench-docs", returnStatus: true)
+                                                if (exitCode != 0) {
+                                                    failedStages.add (currentStage)
+                                                    echoError ("${currentStage} failed with exit code ${exitCode}")
+                                                }
                                             }
                                         }
                                     }
